@@ -1,6 +1,7 @@
 /* GLOBAL CONSTANTS AND VARIABLES */
 
 /* assignment specific globals */
+const URL = 'https://ncsucgclass.github.io/prog4/';
 const WIN_Z = 0;  // default graphics window z coord in world space
 const WIN_LEFT = 0; const WIN_RIGHT = 1;  // default left and right x coords in world space
 const WIN_BOTTOM = 0; const WIN_TOP = 1;  // default top and bottom y coords in world space
@@ -13,6 +14,7 @@ var lightPos = new vec3.fromValues(-3, 1, -0.5);
 /* webgl globals */
 var gl = null; // the all powerful gl object. It's all here folks!
 var vertexPositionAttrib; // where to put position for vertex shader
+var vertexUVAttrib;
 var mAmbientLoc;
 var mDiffuseLoc;
 var mSpecularLoc;
@@ -46,17 +48,21 @@ class Model {
             var whichSetTri; // index of triangle in current triangle set
             var coordArray = []; // 1D array of vertex coords for WebGL
             var indexArray = []; // 1D array of vertex indices for WebGL
+            var uvArray = []; // Texture coords
             var normalArray = [];
             var vtxBufferSize = 0; // the number of vertices in the vertex buffer
             var vtxToAdd = []; // vtx coords to add to the coord array
             var nrmToAdd = [];
+            var uvToAdd = [];
     
             // set up the vertex coord array
             for (whichSetVert=0; whichSetVert<inputTriangle.vertices.length; whichSetVert++) {
                 vtxToAdd = inputTriangle.vertices[whichSetVert];
                 nrmToAdd = inputTriangle.normals[whichSetVert];
+                uvToAdd = inputTriangle.uvs[whichSetVert];
                 coordArray.push(vtxToAdd[0],vtxToAdd[1],vtxToAdd[2]);
                 normalArray.push(nrmToAdd[0], nrmToAdd[1], nrmToAdd[2]);
+                uvArray.push(uvToAdd[0], uvToAdd[1]);
             } // end for vertices in set
 
             // read colors
@@ -76,6 +82,18 @@ class Model {
                 inputTriangle.material.specular[2]
             );
             this.weights = new vec3.fromValues(1, 1, 1);
+            this.alpha = inputTriangle.material.alpha;
+
+            // read texture
+            this.texturePath = URL + inputTriangle.material.texture;
+            this.image = new Image();
+            // Create a texture.
+            this.texture = gl.createTexture();
+            gl.bindTexture(gl.TEXTURE_2D, this.texture);
+            
+            // Fill the texture with a 1x1 blue pixel.
+            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE,
+                        new Uint8Array([0, 0, 255, 255]));
             
             // set up the triangle index array, adjusting indices across sets
             for (whichSetTri=0; whichSetTri<inputTriangle.triangles.length; whichSetTri++) {
@@ -100,6 +118,11 @@ class Model {
             this.normalBuffer = gl.createBuffer();
             gl.bindBuffer(gl.ARRAY_BUFFER, this.normalBuffer);
             gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(normalArray), gl.STATIC_DRAW);
+
+            // texture coords
+            this.uvBuffer = gl.createBuffer();
+            gl.bindBuffer(gl.ARRAY_BUFFER, this.uvBuffer);
+            gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(uvArray), gl.STATIC_DRAW);
             
             // send the triangle indices to webGL
             this.triangleBuffer = gl.createBuffer(); // init empty triangle index buffer
@@ -179,11 +202,13 @@ function setupShaders() {
 
         varying vec3 normalInterp;
         varying vec3 vertPos;
+        varying vec2 UV;
 
         uniform vec3 lightPos, eye;
         uniform vec3 mAmbient, mDiffuse, mSpecular, mWeights;
         uniform float n;
         uniform int mode; // mode: 0 - phong; 1 - blinn phong
+        uniform sampler2D texture;
 
         void main(void) {
             vec3 normal = normalize(normalInterp);
@@ -194,18 +219,12 @@ function setupShaders() {
 
             if (lambertian > 0.0) {
                 vec3 viewDir = normalize(eye - vertPos);
-
-                if (mode == 0) { // phong:
-                    vec3 reflectDir = reflect(-lightDir, normal);
-                    float specAngle = max(dot(reflectDir, viewDir), 0.0);
-                    specular = pow(specAngle, n);
-                } else { // blinn phong:
-                    vec3 halfDir = normalize(lightDir + viewDir);
-                    float specAngle = max(dot(halfDir, normal), 0.0);
-                    specular = pow(specAngle, n);
-                }
+                vec3 halfDir = normalize(lightDir + viewDir);
+                float specAngle = max(dot(halfDir, normal), 0.0);
+                specular = pow(specAngle, n);
             }
-            gl_FragColor = vec4(mWeights[0] * mAmbient + mWeights[1] * lambertian * mDiffuse + mWeights[2] * specular * mSpecular, 1.0);
+            //gl_FragColor = vec4(mWeights[0] * mAmbient + mWeights[1] * lambertian * mDiffuse + mWeights[2] * specular * mSpecular, 1.0);
+            gl_FragColor = texture2D(texture, UV);
         }
     `;
     
@@ -213,16 +232,19 @@ function setupShaders() {
     var vShaderCode = `
         attribute vec3 vertexPosition;
         attribute vec3 vertexNormal;
+        attribute vec2 vertexUV;
 
         uniform mat4 projection, viewMatrix, transMatrix;
 
         varying vec3 normalInterp;
         varying vec3 vertPos;
+        varying vec2 UV;
 
         void main(void) {
             gl_Position = projection * viewMatrix * (transMatrix * vec4(vertexPosition, 1.0));
             vertPos = vec3(transMatrix * vec4(vertexPosition, 1.0));
             normalInterp = vec3(normalize(transMatrix * vec4(vertexNormal, 0.0)));
+            UV = vertexUV;
         }
     `;
     
@@ -269,6 +291,8 @@ function setupShaders() {
                 mDiffuseLoc = gl.getUniformLocation(shaderProgram, 'mDiffuse');
                 mSpecularLoc = gl.getUniformLocation(shaderProgram, 'mSpecular');
                 mWeightsLoc = gl.getUniformLocation(shaderProgram, 'mWeights');
+                vertexUVAttrib = gl.getAttribLocation(shaderProgram, 'vertexUV');
+                gl.enableVertexAttribArray(vertexUVAttrib);
 
                 // mode
                 modeLoc = gl.getUniformLocation(shaderProgram, 'mode');
@@ -294,7 +318,13 @@ function setupShaders() {
     } // end catch
 } // end setup shaders
 
-//var bgColor = 0;
+function imageLoadHandler(texture, image) {
+    console.log(image.width);
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA,gl.UNSIGNED_BYTE, image);
+    gl.generateMipmap(gl.TEXTURE_2D);
+}
+
 // render the loaded model
 function renderTriangles() {
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT); // clear frame/depth buffers
@@ -322,6 +352,12 @@ function renderTriangles() {
         gl.uniform3fv(mDiffuseLoc, model.diffuse);
         gl.uniform3fv(mSpecularLoc, model.specular);
         gl.uniform3fv(mWeightsLoc, model.weights);
+        gl.bindBuffer(gl.ARRAY_BUFFER, model.uvBuffer);
+        gl.vertexAttribPointer(vertexUVAttrib, 2, gl.FLOAT, false, 0, 0);
+        
+        model.image.crossOrigin = 'anonymous';
+        model.image.onload = imageLoadHandler(model.texture, model.image);
+        model.image.src = model.texturePath;
 
         // mode
         gl.uniform1i(modeLoc, model.mode);
