@@ -19,6 +19,7 @@ var mAmbientLoc;
 var mDiffuseLoc;
 var mSpecularLoc;
 var mWeightsLoc;
+var mAlphaLoc;
 var vertexNormalAttrib;
 var lightLoc;
 var eyeLoc;
@@ -33,6 +34,7 @@ var transMatLoc;
 var isHighlighting = false;
 var inHighlight = -1;
 var models = [];
+var loadedImgs = 0;
 
 class Model {
     constructor(inputTriangle) {
@@ -87,13 +89,7 @@ class Model {
             // read texture
             this.texturePath = URL + inputTriangle.material.texture;
             this.image = new Image();
-            // Create a texture.
-            this.texture = gl.createTexture();
-            gl.bindTexture(gl.TEXTURE_2D, this.texture);
-            
-            // Fill the texture with a 1x1 blue pixel.
-            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE,
-                        new Uint8Array([0, 0, 255, 255]));
+            this.imageLoad = false;
             
             // set up the triangle index array, adjusting indices across sets
             for (whichSetTri=0; whichSetTri<inputTriangle.triangles.length; whichSetTri++) {
@@ -206,8 +202,8 @@ function setupShaders() {
 
         uniform vec3 lightPos, eye;
         uniform vec3 mAmbient, mDiffuse, mSpecular, mWeights;
-        uniform float n;
-        uniform int mode; // mode: 0 - phong; 1 - blinn phong
+        uniform float n, mAlpha;
+        uniform int mode; // mode: 0 - replace; 1 - modulate
         uniform sampler2D texture;
 
         void main(void) {
@@ -224,7 +220,22 @@ function setupShaders() {
                 specular = pow(specAngle, n);
             }
             //gl_FragColor = vec4(mWeights[0] * mAmbient + mWeights[1] * lambertian * mDiffuse + mWeights[2] * specular * mSpecular, 1.0);
-            gl_FragColor = texture2D(texture, UV);
+            vec4 textureColor = texture2D(texture, UV);
+            vec3 cAmbient;
+            vec3 cDiffuse;
+            vec3 cSpecular;
+            if (mode == 0) {
+                // replace
+                cAmbient = vec3(1.0, 1.0, 1.0);
+                cDiffuse = vec3(1.0, 1.0, 1.0);
+                cSpecular = vec3(1.0, 1.0, 1.0);
+            } else {
+                // modulate
+                cAmbient = mAmbient;
+                cDiffuse = mDiffuse;
+                cSpecular = mSpecular;
+            }
+            gl_FragColor = vec4(textureColor.rgb * (cAmbient + lambertian * cDiffuse + specular * cSpecular), textureColor.a * mAlpha);
         }
     `;
     
@@ -291,6 +302,7 @@ function setupShaders() {
                 mDiffuseLoc = gl.getUniformLocation(shaderProgram, 'mDiffuse');
                 mSpecularLoc = gl.getUniformLocation(shaderProgram, 'mSpecular');
                 mWeightsLoc = gl.getUniformLocation(shaderProgram, 'mWeights');
+                mAlphaLoc = gl.getUniformLocation(shaderProgram, 'mAlpha');
                 vertexUVAttrib = gl.getAttribLocation(shaderProgram, 'vertexUV');
                 gl.enableVertexAttribArray(vertexUVAttrib);
 
@@ -318,19 +330,22 @@ function setupShaders() {
     } // end catch
 } // end setup shaders
 
-function imageLoadHandler(texture, image) {
-    console.log(image.width);
-    gl.bindTexture(gl.TEXTURE_2D, texture);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA,gl.UNSIGNED_BYTE, image);
-    gl.generateMipmap(gl.TEXTURE_2D);
+function loadTexture(modelIndex) {
+    models[modelIndex].image.crossOrigin = 'Anonymous';
+    models[modelIndex].image.src = models[modelIndex].texturePath;
+    models[modelIndex].image.addEventListener('load', function() {
+        models[modelIndex].imageLoad = true;
+        renderTriangles();
+    });
 }
 
 // render the loaded model
 function renderTriangles() {
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT); // clear frame/depth buffers
-    //bgColor = (bgColor < 1) ? (bgColor + 0.001) : 0;
-    //gl.clearColor(bgColor, 0, 0, 1.0);
-    //requestAnimationFrame(renderBackground);
+    // Enable alpha blending and set the percentage blending factors
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    //requestAnimationFrame(renderTriangles);
     for (var i = 0; i < models.length; i ++) {
         var model = models[i];
         // vertex buffer: activate and feed into vertex shader
@@ -352,12 +367,19 @@ function renderTriangles() {
         gl.uniform3fv(mDiffuseLoc, model.diffuse);
         gl.uniform3fv(mSpecularLoc, model.specular);
         gl.uniform3fv(mWeightsLoc, model.weights);
+        gl.uniform1f(mAlphaLoc, model.alpha);
         gl.bindBuffer(gl.ARRAY_BUFFER, model.uvBuffer);
         gl.vertexAttribPointer(vertexUVAttrib, 2, gl.FLOAT, false, 0, 0);
-        
-        model.image.crossOrigin = 'anonymous';
-        model.image.onload = imageLoadHandler(model.texture, model.image);
-        model.image.src = model.texturePath;
+        var texture = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, texture);
+        if (model.imageLoad) {
+            gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA,gl.UNSIGNED_BYTE, model.image);
+            gl.generateMipmap(gl.TEXTURE_2D);
+        } else {
+            // use dummy texture
+            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 255, 255]));
+        }
 
         // mode
         gl.uniform1i(modeLoc, model.mode);
@@ -610,6 +632,9 @@ function main() {
     setupWebGL(); // set up the webGL environment
     loadTriangles(); // load in the triangles from tri file
     setupShaders(); // setup the webGL shaders
+    for (var i = 0; i < models.length; i ++) {
+        loadTexture(i);
+    }
     renderTriangles(); // draw the triangles using webGL
 
     document.addEventListener('keydown', keyDownHandler, false);
