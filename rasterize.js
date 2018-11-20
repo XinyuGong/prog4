@@ -34,6 +34,7 @@ var transMatLoc;
 var isHighlighting = false;
 var inHighlight = -1;
 var models = [];
+var renderOrder = [];
 var loadedImgs = 0;
 
 class Model {
@@ -42,8 +43,9 @@ class Model {
         this.transMat = new mat4.create();
         this.rotatMat = new mat4.create();
         this.scaleMat = new mat4.create();
-        this.mode = 1; // 0 - phong; 1 - blinn phong
+        this.mode = 1; // 0 - replace; 1 - modulate
         if (inputTriangle != String.null) {
+            this.transform = mat4.create();
             this.center = getCenter(inputTriangle.vertices);
             this.n = inputTriangle.material.n;
             var whichSetVert; // index of vertex in current triangle set
@@ -186,6 +188,7 @@ function loadTriangles() {
     var inputTriangles = getJSONFile(INPUT_TRIANGLES_URL,"triangles");
     for (var i = 0; i < inputTriangles.length; i ++) {
         models.push(new Model(inputTriangles[i]));
+        renderOrder.push(i);
     }
 } // end load triangles
 
@@ -339,15 +342,45 @@ function loadTexture(modelIndex) {
     });
 }
 
-// render the loaded model
+function compare(x, y) {
+    var a = models[x];
+    var b = models[y];
+    var centerA = vec4.create();
+    var centerB = vec4.create();
+    mat4.mul(centerA, a.transMat, vec4.fromValues(a.center[0], a.center[1], a.center[2], 1));
+    mat4.mul(centerB, b.transMat, vec4.fromValues(b.center[0], b.center[1], b.center[2], 1));
+    var distA = vec3.distance(vec3.fromValues(centerA[0], centerA[1], centerA[2]), a.center);
+    var distB = vec3.distance(vec3.fromValues(centerB[0], centerB[1], centerB[2]), b.center);
+    if (distA > distB) return -1;
+    return 1;
+}
+
 function renderTriangles() {
+    for (var i = 0; i < models.length; i ++) {
+        var model = models[i];
+        // transformation
+        model.transform = mat4.create();
+        mat4.mul(model.transform, model.scaleMat, model.transform);
+        mat4.mul(model.transform, model.rotatMat, model.transform);
+        mat4.mul(model.transform, model.transMat, model.transform);
+    }
+    renderOrder.sort(compare);
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT); // clear frame/depth buffers
     // Enable alpha blending and set the percentage blending factors
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    renderModels(true);
+    renderModels(false);
+}
+
+// render the loaded model
+function renderModels(opaque) {
     //requestAnimationFrame(renderTriangles);
     for (var i = 0; i < models.length; i ++) {
-        var model = models[i];
+        var model = models[renderOrder[i]];
+        if ((opaque && model.alpha < 1) || (!opaque && model.alpha == 1)) {
+            continue; // only render opaque or transparent models
+        }
         // vertex buffer: activate and feed into vertex shader
         gl.bindBuffer(gl.ARRAY_BUFFER,model.vertexBuffer); // activate
         gl.vertexAttribPointer(vertexPositionAttrib,3,gl.FLOAT,false,0,0); // feed
@@ -392,11 +425,7 @@ function renderTriangles() {
         gl.uniform1f(nLoc, model.n);
 
         // transformation
-        var transMat = mat4.create();
-        mat4.mul(transMat, model.scaleMat, transMat);
-        mat4.mul(transMat, model.rotatMat, transMat);
-        mat4.mul(transMat, model.transMat, transMat);
-        gl.uniformMatrix4fv(transMatLoc, false, transMat);
+        gl.uniformMatrix4fv(transMatLoc, false, model.transform);
 
         // light
         gl.uniform3fv(lightLoc, lightPos);
@@ -611,16 +640,16 @@ function highlightOff() {
 }
 
 function getCenter(vertices) {
-    var coord = [[], [], []];
+    var coord = [0, 0, 0];
     for (var i = 0; i < 3; i ++) {
         for (var j = 0; j < vertices.length; j ++) {
-            coord[i].push(vertices[j][i]);
+            coord[i] += vertices[j][i];
         }
     }
     var center = new vec3.fromValues(
-        (Math.max(...coord[0]) + Math.min(...coord[0])) / 2,
-        (Math.max(...coord[1]) + Math.min(...coord[1])) / 2,
-        (Math.max(...coord[2]) + Math.min(...coord[2])) / 2
+        coord[0] / vertices.length,
+        coord[1] / vertices.length,
+        coord[2] / vertices.length
     );
     return center;
 }
